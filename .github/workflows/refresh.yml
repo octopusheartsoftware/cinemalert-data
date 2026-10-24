@@ -1,11 +1,14 @@
 # Rebuilds CinemAlert's shared movie list every 6 hours and publishes it on GitHub Pages.
-# Also runs on demand: Actions tab → "Refresh movie data" → Run workflow.
+# Also runs on demand (Actions tab → "Refresh movie data" → Run workflow) and whenever its code is pushed.
 name: Refresh movie data
 
 on:
   schedule:
     - cron: "17 */6 * * *"   # 00:17, 06:17, 12:17, 18:17 UTC (off the hour, when GitHub is less busy)
   workflow_dispatch:
+  push:                      # also run straight away when the job's own code changes
+    branches: [main]
+    paths: ["scripts/**", ".github/workflows/**"]
 
 permissions:
   contents: write   # save the updated data file (keeps the scores memory, and counts as repo activity)

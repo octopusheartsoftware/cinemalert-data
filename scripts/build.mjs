@@ -7,6 +7,13 @@ const DAY = 864e5;
 export const OMDB_PER_RUN = 220;
 // How long a saved IMDb / Rotten Tomatoes score is trusted before it's checked again.
 const SCORE_MAX_AGE = 2 * DAY;
+// How far ahead "Coming soon" reaches.
+const AHEAD_DAYS = 90;
+/* "Likely playing near you". TMDB volunteers mark far too many films as wide releases (338 at once in Oct 2026,
+   when real wide releases number ~30–50), so a film counts only if it's a wide, non-re-release that is also among
+   the most popular of its group: in theaters for at most NOW_MAX_DAYS, or opening within SOON_DAYS. Still an
+   educated guess, and the app words it that way. */
+const NOW_TOP = 45, NOW_MAX_DAYS = 70, SOON_TOP = 20, SOON_DAYS = 14;
 
 const isoLocal = d => d.toISOString().slice(0, 10);
 const daysBetween = (a, b) => (Date.parse(b) - Date.parse(a)) / DAY;
@@ -36,11 +43,18 @@ async function pool(items, n, fn){
   return out;
 }
 
-async function allPages(tmdb, path, region, maxPages = 60){
-  const first = await tmdb(path, {region, page: 1});
+async function allPages(tmdb, path, params, maxPages = 60){
+  const first = await tmdb(path, {...params, page: 1});
   const pages = Math.min(first.total_pages || 1, maxPages);
-  const rest = await pool(Array.from({length: pages - 1}, (_, i) => i + 2), 4, p => tmdb(path, {region, page: p}));
+  const rest = await pool(Array.from({length: pages - 1}, (_, i) => i + 2), 4, p => tmdb(path, {...params, page: p}));
   return [first, ...rest].flatMap(l => l?.results || []).map(r => r.id);
+}
+
+// Best trailer: an official YouTube trailer, else any YouTube trailer, else a teaser.
+function pickTrailer(videos){
+  const yt = (videos?.results || []).filter(v => v.site === "YouTube");
+  const v = yt.find(v => v.type === "Trailer" && v.official) || yt.find(v => v.type === "Trailer") || yt.find(v => v.type === "Teaser");
+  return v ? v.key : null;
 }
 
 /* Release info for one country. TMDB release types: 1 premiere, 2 limited theatrical, 3 wide theatrical. */
@@ -67,6 +81,14 @@ function movieDates(d, rel, inNowPlaying, today){
   return {release, showing, reissue, wide};
 }
 
+function markLikelyNearby(movies, today){
+  const soonLimit = isoLocal(new Date(Date.parse(today) + SOON_DAYS * DAY));
+  const top = (list, n) => new Set(list.sort((a, b) => b.popularity - a.popularity).slice(0, n));
+  const now = top(movies.filter(m => m.wide && m.showing <= today && daysBetween(m.showing, today) <= NOW_MAX_DAYS), NOW_TOP);
+  const soon = top(movies.filter(m => m.wide && m.showing > today && m.showing <= soonLimit), SOON_TOP);
+  for (const m of movies) m.likelyNearby = now.has(m) || soon.has(m);
+}
+
 async function omdbScores(key, imdbId){
   const r = await fetch(`https://www.omdbapi.com/?i=${imdbId}&apikey=${encodeURIComponent(key)}`);
   if (r.status === 401) throw new Error("OMDb rejected the key or the daily limit is used up (401).");
@@ -88,14 +110,21 @@ export async function buildMovies({tmdbKey, omdbKey = "", region = "US", previou
   const tmdb = tmdbClient(tmdbKey, log);
   const today = isoLocal(now);
 
-  const [nowIds, soonIds] = await Promise.all([allPages(tmdb, "/movie/now_playing", region), allPages(tmdb, "/movie/upcoming", region)]);
+  // TMDB's "upcoming" list only reaches ~3 weeks ahead; "discover" adds theatrical releases up to ~3 months out,
+  // so people following a series hear about the next film early.
+  const ahead = isoLocal(new Date(now.getTime() + AHEAD_DAYS * DAY)), tomorrow = isoLocal(new Date(now.getTime() + DAY));
+  const [nowIds, soonIds, laterIds] = await Promise.all([
+    allPages(tmdb, "/movie/now_playing", {region}),
+    allPages(tmdb, "/movie/upcoming", {region}),
+    allPages(tmdb, "/discover/movie", {region, with_release_type: "2|3", "release_date.gte": tomorrow, "release_date.lte": ahead, sort_by: "popularity.desc"}, 20)
+  ]);
   const nowSet = new Set(nowIds);
-  const ids = [...new Set([...nowIds, ...soonIds])];
+  const ids = [...new Set([...nowIds, ...soonIds, ...laterIds])];
   log(`${region}: ${nowSet.size} now playing, ${ids.length} movies in total`);
 
   let done = 0;
   const movies = (await pool(ids, 8, async id => {
-    const d = await tmdb(`/movie/${id}`, {append_to_response: "release_dates,credits"});
+    const d = await tmdb(`/movie/${id}`, {append_to_response: "release_dates,credits,videos,keywords"});
     if (++done % 100 === 0) log(`details ${done}/${ids.length}`);
     if (!d) return null;
     const rel = regionRelease(d.release_dates, region);
@@ -109,9 +138,14 @@ export async function buildMovies({tmdbKey, omdbKey = "", region = "US", previou
       people: (d.credits?.cast || []).slice(0, 15).map(x => x.name)
         .concat((d.credits?.crew || []).filter(x => ["Writer", "Screenplay"].includes(x.job)).map(x => x.name)),
       director: (d.credits?.crew || []).filter(x => x.job === "Director").map(x => x.name).join(", "),
+      trailer: pickTrailer(d.videos),
+      collection: d.belongs_to_collection ? {id: d.belongs_to_collection.id, name: d.belongs_to_collection.name} : null,
+      keywords: (d.keywords?.keywords || []).slice(0, 15).map(k => k.name),
+      popularity: Math.round((d.popularity || 0) * 10) / 10, votes: d.vote_count || 0,
       imdb: null, rt: null, scoresAt: null
     };
   })).filter(Boolean);
+  markLikelyNearby(movies, today);
 
   // Reuse saved scores, then spend this run's OMDb budget: never-checked movies first, then the
   // newest stale ones (new films' scores change the most).
@@ -119,7 +153,9 @@ export async function buildMovies({tmdbKey, omdbKey = "", region = "US", previou
   for (const m of movies){ const s = saved.get(m.imdbId); if (s) Object.assign(m, {imdb: s.imdb, rt: s.rt, scoresAt: s.scoresAt}); }
   let lookups = 0;
   if (omdbKey){
-    const due = movies.filter(m => m.imdbId && (!m.scoresAt || now - Date.parse(m.scoresAt) > SCORE_MAX_AGE))
+    // Films opening more than 3 weeks out have no scores yet; skip them to save the daily budget.
+    const soonest = isoLocal(new Date(now.getTime() + 21 * DAY));
+    const due = movies.filter(m => m.imdbId && m.showing <= soonest && (!m.scoresAt || now - Date.parse(m.scoresAt) > SCORE_MAX_AGE))
       .sort((a, b) => (!!a.scoresAt - !!b.scoresAt) || b.showing.localeCompare(a.showing))
       .slice(0, omdbLimit);
     await pool(due, 4, async m => {
