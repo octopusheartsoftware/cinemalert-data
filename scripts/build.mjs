@@ -12,8 +12,11 @@ const AHEAD_DAYS = 90;
 /* "Likely playing near you". TMDB volunteers mark far too many films as wide releases (338 at once in Oct 2026,
    when real wide releases number ~30–50), so a film counts only if it's a wide, non-re-release that is also among
    the most popular of its group: in theaters for at most NOW_MAX_DAYS, or opening within SOON_DAYS. Still an
-   educated guess, and the app words it that way. */
-const NOW_TOP = 45, NOW_MAX_DAYS = 70, SOON_TOP = 20, SOON_DAYS = 14;
+   educated guess, and the app words it that way.
+   Popularity floors (tuned Oct 24, 2026): unreleased films are mostly near 0–5, so a floor keeps tiny releases out of
+   a thin "top 20". Non-English films mostly open only at specialty and community cinemas in the US, so they need a
+   breakout-level score. */
+const NOW_TOP = 45, NOW_MAX_DAYS = 70, SOON_TOP = 20, SOON_DAYS = 14, MIN_POPULARITY = 15, NON_EN_MIN_POPULARITY = 100;
 
 const isoLocal = d => d.toISOString().slice(0, 10);
 const daysBetween = (a, b) => (Date.parse(b) - Date.parse(a)) / DAY;
@@ -83,7 +86,8 @@ function movieDates(d, rel, inNowPlaying, today){
 
 function markLikelyNearby(movies, today){
   const soonLimit = isoLocal(new Date(Date.parse(today) + SOON_DAYS * DAY));
-  const top = (list, n) => new Set(list.sort((a, b) => b.popularity - a.popularity).slice(0, n));
+  const popularEnough = m => m.popularity >= (m.language === "en" ? MIN_POPULARITY : NON_EN_MIN_POPULARITY);
+  const top = (list, n) => new Set(list.filter(popularEnough).sort((a, b) => b.popularity - a.popularity).slice(0, n));
   const now = top(movies.filter(m => m.wide && m.showing <= today && daysBetween(m.showing, today) <= NOW_MAX_DAYS), NOW_TOP);
   const soon = top(movies.filter(m => m.wide && m.showing > today && m.showing <= soonLimit), SOON_TOP);
   for (const m of movies) m.likelyNearby = now.has(m) || soon.has(m);
