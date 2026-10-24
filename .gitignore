@@ -1,0 +1,14 @@
+# Secrets: never commit these
+.env
+.env.*
+*.key
+*.pem
+secrets.*
+
+node_modules/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
