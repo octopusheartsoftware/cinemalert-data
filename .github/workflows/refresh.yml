@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 20
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      url: ${{ steps.deploy.outputs.page_url || steps.deploy_retry1.outputs.page_url || steps.deploy_retry2.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,5 +52,30 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: data
+      # Publishing to GitHub Pages now and then fails on GitHub's side (a "500" server error, or a
+      # deployment stuck on "updating_pages"). A normal publish takes under a minute, so give each
+      # try 3 minutes, and if it fails, wait and try again before calling the run a failure.
       - id: deploy
         uses: actions/deploy-pages@v4
+        continue-on-error: true
+        with:
+          timeout: 180000
+
+      - name: Wait, then retry publishing
+        if: steps.deploy.outcome == 'failure'
+        run: sleep 60
+      - id: deploy_retry1
+        if: steps.deploy.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+        with:
+          timeout: 180000
+
+      - name: Wait longer, then retry publishing once more
+        if: steps.deploy.outcome == 'failure' && steps.deploy_retry1.outcome == 'failure'
+        run: sleep 180
+      - id: deploy_retry2
+        if: steps.deploy.outcome == 'failure' && steps.deploy_retry1.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        with:
+          timeout: 300000
