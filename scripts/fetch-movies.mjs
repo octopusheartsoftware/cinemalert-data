@@ -1,10 +1,10 @@
 // Run by the GitHub Actions schedule: builds data/movies-<country>.json.
-// Keys come from the TMDB_KEY and OMDB_KEY repository secrets; they never appear in the output.
+// The key comes from the TMDB_KEY repository secret; it never appears in the output. (OMDb scores were dropped Nov 6, 2026.)
 import {readFile, writeFile, mkdir} from "node:fs/promises";
 import {buildMovies} from "./build.mjs";
 
 const countries = (process.env.COUNTRIES || "US").split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
-const tmdbKey = process.env.TMDB_KEY, omdbKey = process.env.OMDB_KEY || "";
+const tmdbKey = process.env.TMDB_KEY, omdbKey = ""; // no OMDb lookups (its terms are personal, non-commercial only)
 if (!tmdbKey) { console.error("TMDB_KEY secret is missing."); process.exit(1); }
 
 await mkdir("data", {recursive: true});

@@ -36,7 +36,6 @@ jobs:
       - name: Build movie list
         env:
           TMDB_KEY: ${{ secrets.TMDB_KEY }}
-          OMDB_KEY: ${{ secrets.OMDB_KEY }}
           COUNTRIES: US
         run: node scripts/fetch-movies.mjs
 

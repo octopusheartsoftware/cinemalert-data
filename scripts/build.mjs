@@ -1,4 +1,6 @@
-// Builds one country's movie list for CinemAlert from TMDB (+ OMDb scores).
+// Builds one country's movie list for CinemAlert from TMDB.
+// OMDb scores were dropped Nov 6, 2026 (OMDb's terms allow personal, non-commercial use only); the code stays for a
+// possible paid or permitted source later, but without a key no score is looked up or carried over.
 // Plain JavaScript with no Node-only code, so it can also be tested in a browser.
 
 const TMDB = "https://api.themoviedb.org/3";
@@ -16,7 +18,9 @@ const AHEAD_DAYS = 90;
    Popularity floors (tuned Oct 24, 2026): unreleased films are mostly near 0–5, so a floor keeps tiny releases out of
    a thin "top 20". Non-English films mostly open only at specialty and community cinemas in the US, so they need a
    breakout-level score. */
-const NOW_TOP = 45, NOW_MAX_DAYS = 70, SOON_TOP = 20, SOON_DAYS = 14, MIN_POPULARITY = 15, NON_EN_MIN_POPULARITY = 100;
+const NOW_TOP = 45, NOW_MAX_DAYS = 70, SOON_TOP = 40, SOON_MIN_POPULARITY = 5, MIN_POPULARITY = 15, NON_EN_MIN_POPULARITY = 100;
+// Features only: anything under 40 minutes (TMDB lists shorts that play before a feature) is left out of the list.
+const MIN_RUNTIME = 40;
 
 const isoLocal = d => d.toISOString().slice(0, 10);
 const daysBetween = (a, b) => (Date.parse(b) - Date.parse(a)) / DAY;
@@ -84,12 +88,16 @@ function movieDates(d, rel, inNowPlaying, today){
   return {release, showing, reissue, wide};
 }
 
-function markLikelyNearby(movies, today){
-  const soonLimit = isoLocal(new Date(Date.parse(today) + SOON_DAYS * DAY));
+/* Upcoming films (changed Nov 6, 2026): a wide release counts as big however far out it opens, within the whole
+   AHEAD_DAYS window, not just the next two weeks. Unreleased films sit near 0-10 popularity until their marketing
+   starts, so their floor is low; before this, Avengers and Dune sequels six weeks out were filed as "smaller" and
+   hidden by default in the app's Coming soon tab. */
+export function markLikelyNearby(movies, today){
   const popularEnough = m => m.popularity >= (m.language === "en" ? MIN_POPULARITY : NON_EN_MIN_POPULARITY);
-  const top = (list, n) => new Set(list.filter(popularEnough).sort((a, b) => b.popularity - a.popularity).slice(0, n));
-  const now = top(movies.filter(m => m.wide && m.showing <= today && daysBetween(m.showing, today) <= NOW_MAX_DAYS), NOW_TOP);
-  const soon = top(movies.filter(m => m.wide && m.showing > today && m.showing <= soonLimit), SOON_TOP);
+  const soonEnough = m => m.popularity >= (m.language === "en" ? SOON_MIN_POPULARITY : NON_EN_MIN_POPULARITY);
+  const top = (list, n, ok) => new Set(list.filter(ok).sort((a, b) => b.popularity - a.popularity).slice(0, n));
+  const now = top(movies.filter(m => m.wide && m.showing <= today && daysBetween(m.showing, today) <= NOW_MAX_DAYS), NOW_TOP, popularEnough);
+  const soon = top(movies.filter(m => m.wide && m.showing > today), SOON_TOP, soonEnough);
   for (const m of movies) m.likelyNearby = now.has(m) || soon.has(m);
 }
 
@@ -148,12 +156,12 @@ export async function buildMovies({tmdbKey, omdbKey = "", region = "US", previou
       popularity: Math.round((d.popularity || 0) * 10) / 10, votes: d.vote_count || 0,
       imdb: null, rt: null, scoresAt: null
     };
-  })).filter(Boolean);
+  })).filter(m => m && !(m.runtime && m.runtime < MIN_RUNTIME)); // features only, no shorts
   markLikelyNearby(movies, today);
 
   // Reuse saved scores, then spend this run's OMDb budget: never-checked movies first, then the
   // newest stale ones (new films' scores change the most).
-  const saved = new Map((previous?.movies || []).filter(m => m.imdbId).map(m => [m.imdbId, m]));
+  const saved = new Map(omdbKey ? (previous?.movies || []).filter(m => m.imdbId).map(m => [m.imdbId, m]) : []);
   for (const m of movies){ const s = saved.get(m.imdbId); if (s) Object.assign(m, {imdb: s.imdb, rt: s.rt, scoresAt: s.scoresAt}); }
   let lookups = 0;
   if (omdbKey){
